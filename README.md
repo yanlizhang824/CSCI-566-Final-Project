@@ -4,8 +4,8 @@
 
 获取AudioCLIP-Partial-Training.pt，运行AudioCLIP-master/demo/AudioCLIP.ipynb的第一个代码框：
 
-! wget -P ../assets/ https://github.com/AndreyGuzhov/AudioCLIP/releases/download/v0.1/bpe_simple_vocab_16e6.txt.gz
-! wget -P ../assets/ https://github.com/AndreyGuzhov/AudioCLIP/releases/download/v0.1/AudioCLIP-Full-Training.pt
+![image](https://github.com/user-attachments/assets/b21d3edf-5d23-45f2-bf1c-9ce2bf8795fa)
+
 
 AudioCLIP-Partial-Training.pt文件将被正确存放在AudioCLIP-master/assets中
 
