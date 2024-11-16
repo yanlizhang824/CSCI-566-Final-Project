@@ -22,5 +22,7 @@ main_MELD.ipynb的运行环境为main_requirements.txt
 由于版本过低，有些依赖项与高版本python有冲突，所以分三步：
 
 第一步：创建的虚拟环境python版本=3.8.20
+
 第二步：安装requirements.txt依赖
+
 第三步：将python版本降回3.7.12
