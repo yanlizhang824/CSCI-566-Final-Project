@@ -13,9 +13,7 @@ AudioCLIP-Partial-Training.pt文件将被正确存放在AudioCLIP-master/assets�
 MELD.Raw从 https://www.kaggle.com/datasets/zaber666/meld-dataset 下载，解压完成后将MELD.Raw移动到data/MELD/MELD_kaggle文件夹下
 
 ## 环境依赖
-data_preprocess.ipynb的运行环境为data_preprocess_requirements.txt
-
-python=3.10.15
+data_preprocess.ipynb的运行环境为data_preprocess_requirements.txt, python=3.10.15
 
 main_MELD.ipynb的运行环境为main_requirements.txt
 
