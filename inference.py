@@ -1,107 +1,164 @@
-import torch
-import torchvision.transforms as transforms
-from PIL import Image
-from AudioCLIP.model import AudioCLIP
-from AudioCLIP.utils.transforms import ToTensor1D
+import time
+start_time = time.time()
+from pathlib import Path
+import random
+import os
+import sys
+import glob
 import librosa
-import torch.nn as nn
+import librosa.display
+import simplejpeg
 import numpy as np
+import torch
+import torchvision as tv
+import matplotlib.pyplot as plt
+from PIL import Image
+from IPython.display import Audio, display
+# sys.path.append(os.path.abspath(f'{os.getcwd()}/..'))
+sys.path.append(os.path.join(os.getcwd(), 'AudioCLIP-master'))
+from model import AudioCLIP
+from utils.transforms import ToTensor1D
+from torchvision import datasets
+import torch.nn.functional as F
+from torch import nn
 
-# Load the models
-class MLP1(nn.Module):
-    def __init__(self, input_shape: int, output_shape: int):
-        super().__init__()
-        self.layer_1 = nn.Linear(in_features=input_shape, out_features=output_shape)
-        # self.layer_2 = nn.Linear(in_features=hidden_shape, out_features=output_shape)
-        # self.relu = nn.ReLU()
-        # self.dropout = nn.Dropout(p=0.5)
-
-    def forward(self, x):
-        x = self.layer_1(x)
-        return x
-
-class MLP2(nn.Module):
-    def __init__(self, input_shape: int, output_shape: int, hidden_shape: int, DROP_OUT):
-        super().__init__()
-        self.layer_1 = nn.Linear(in_features=input_shape, out_features=hidden_shape)
-        self.layer_2 = nn.Linear(in_features=hidden_shape, out_features=output_shape)
-        self.relu = nn.ReLU()
-        self.dropout = nn.Dropout(p=DROP_OUT)
-
-    def forward(self, x):
-        x = self.relu(self.layer_1(x))
-        x = self.dropout(x)
-        x = self.layer_2(x)
-        return x
-
-# Initialize models
-aclp = AudioCLIP(pretrained='AudioCLIP/assets/AudioCLIP-Full-Training.pt')
-# change the dimension accordingly
-
-mlp1 = MLP1(input_shape=3072, output_shape=3)
-#mlp2 = MLP2(input_shape=512, output_shape=5)
-
-# Load trained weights for MLP models
-mlp1.load_state_dict(torch.load("mlp1_weights.pth", map_location=torch.device('cpu')))
-#mlp2.load_state_dict(torch.load("mlp2_weights.pth"))
-
-device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-
-# Move models to the correct device
-mlp1.to(device)
-aclp.to(device)
-
-mlp1.eval()
-#mlp2.eval()
-
-# Preprocessing functions
-def preprocess_image(image_path):
-    transform = transforms.Compose([
-        transforms.Resize((224, 224)),
-        transforms.ToTensor(),
-        transforms.Normalize(mean=[0.48145466, 0.4578275, 0.40821073], std=[0.26862954, 0.26130258, 0.27577711])
+def inference(image_path, audio_path, text, model_path):
+    MODEL_FILENAME = 'AudioCLIP-Full-Training.pt'
+    # derived from ESResNeXt
+    SAMPLE_RATE = 44100
+    # derived from CLIP
+    IMAGE_SIZE = 224
+    IMAGE_MEAN = 0.48145466, 0.4578275, 0.40821073
+    IMAGE_STD = 0.26862954, 0.26130258, 0.27577711
+    
+    aclp = AudioCLIP(pretrained=f'AudioCLIP-master/assets/{MODEL_FILENAME}')
+    
+    audio_transforms = ToTensor1D()
+    
+    image_transforms = tv.transforms.Compose([
+        tv.transforms.ToTensor(),
+        tv.transforms.Resize(IMAGE_SIZE, interpolation=Image.BICUBIC),
+        tv.transforms.CenterCrop(IMAGE_SIZE),
+        tv.transforms.Normalize(IMAGE_MEAN, IMAGE_STD)
     ])
-    image = Image.open(image_path).convert('RGB')
-    return transform(image).unsqueeze(0)  # Add batch dimension
 
-def preprocess_audio(audio_path):
-    y, sr = librosa.load(audio_path, sr=44100)
-    transform = ToTensor1D()
-    return transform(y).unsqueeze(0)  
+    
+    images = []
+    audio = []
+    texts = []
+    img = Image.open(image_path)
+    if img.mode != 'RGB':
+        img = img.convert('RGB')
+    img = np.array(img)
+    images.append(img)
+    
+    with torch.no_grad():
+        track, _ = librosa.load(audio_path, sr=SAMPLE_RATE, dtype=np.float32)
+        
+        # compute spectrograms using trained audio-head (fbsp-layer of ESResNeXt)
+        # thus, the actual time-frequency representation will be visualized
+        spec = aclp.audio.spectrogram(torch.from_numpy(track.reshape(1, 1, -1)))
+        spec = np.ascontiguousarray(spec.numpy()).view(np.complex64)
+        pow_spec = 10 * np.log10(np.abs(spec) ** 2 + 1e-18).squeeze()
+        
+        audio.append((track, pow_spec))
+    
+    texts.append(text)    
+    
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    
+    def process_audioclip(audio, images, texts): 
+        
+        
+        with torch.no_grad():
+            # AudioCLIP handles raw audio on input, so the input shape is [batch x channels x duration]
+            audio_tensors = [audio_transforms(track.reshape(1, -1)) for track, _ in audio]
+            # max_length = max(t.size(1) for t in tensors)
+            # padded_tensors = [F.pad(t, (0, max_length - t.size(1)), "constant", 0) for t in tensors]
+            audio = torch.stack([audio_tensors[0], audio_tensors[0]])
+            # standard channel-first shape [batch x channels x height x width]
+            image_tensors = [image_transforms(image) for image in images]
+            images = torch.stack([image_tensors[0], image_tensors[0]])
+            # textual input is processed internally, so no need to transform it beforehand
+            texts = [texts, texts]
+    
+    
+            # AudioCLIP's output: Tuple[Tuple[Features, Logits], Loss]
+            # Features = Tuple[AudioFeatures, ImageFeatures, TextFeatures]
+            # Logits = Tuple[AudioImageLogits, AudioTextLogits, ImageTextLogits]
+            ((audio_features, _, _), _), _ = aclp(audio=audio)
+            end_time = time.time()
+            
+            ((_, image_features, _), _), _ = aclp(image=images)
+            ((_, _, text_features), _), _ = aclp(text=texts)
+    
+            end_time = time.time()
+            
+            audio_features = audio_features / torch.linalg.norm(audio_features, dim=-1, keepdim=True)
+            image_features = image_features / torch.linalg.norm(image_features, dim=-1, keepdim=True)
+            text_features = text_features / torch.linalg.norm(text_features, dim=-1, keepdim=True)
+    
+        return torch.cat((audio_features, image_features, text_features), dim=1) #image_features#
+    features_embedding = process_audioclip(audio, images, texts).to(device)
+    features_embedding = features_embedding[0]
+    
+    
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    
+    class MLP1(nn.Module):
+        def __init__(self, input_shape: int, output_shape: int):
+            super().__init__()
+            self.layer_1 = nn.Linear(in_features=input_shape, out_features=output_shape)
+            # self.layer_2 = nn.Linear(in_features=hidden_shape, out_features=output_shape)
+            # self.relu = nn.ReLU()
+            # self.dropout = nn.Dropout(p=0.5)
+    
+        def forward(self, x):
+            x = self.layer_1(x)
+            return x
+    
+    class MLP2(nn.Module):
+        def __init__(self, input_shape: int, output_shape: int, hidden_shape: int, DROP_OUT):
+            super().__init__()
+            self.layer_1 = nn.Linear(in_features=input_shape, out_features=hidden_shape)
+            self.layer_2 = nn.Linear(in_features=hidden_shape, out_features=output_shape)
+            self.relu = nn.ReLU()
+            self.dropout = nn.Dropout(p=DROP_OUT)
+    
+        def forward(self, x):
+            x = self.relu(self.layer_1(x))
+            x = self.dropout(x)
+            x = self.layer_2(x)
+            return x
+    
+    mlp1 = MLP1(input_shape=3072, output_shape=3)
+    #mlp2 = MLP2(input_shape=512, output_shape=5)
+    
+    # Load trained weights for MLP models
+    mlp1.load_state_dict(torch.load(model_path))
+    mlp1 = mlp1.to(device)
+    #mlp2.load_state_dict(torch.load("mlp2_weights.pth"))
+    
+    mlp1.eval()
+    #mlp2.eval()
+    
+    mood_mapping = {
+        0: 'Sad',
+        1: 'Neutral', 
+        2: 'Happy'
+    }
+    
+    output = mlp1(features_embedding)
+    mood_idx = torch.argmax(output).item()
+    mood_name = mood_mapping.get(mood_idx)    
+    print(f"Running time: {time.time() - start_time:.4f} seconds")
+    return mood_name
 
-def preprocess_text(text):
-    return aclp.encode_text([text])  # Assuming AudioCLIP has a text encoding function
 
-# Inference function
-def infer(image_path, audio_path, text, model_type="mlp1"):
-    # Preprocess inputs
-    image_embedding = aclp.encode_image(preprocess_image(image_path).to(device))
-    audio_embedding = aclp.encode_audio(preprocess_audio(audio_path).to(device))
-    text_embedding = preprocess_text(text).to(device)
-
-    # Concatenate embeddings
-    combined_embedding = torch.cat([image_embedding, audio_embedding, text_embedding], dim=1).to(device)
-
-    # Select model
-    if model_type == "mlp1":
-        output = mlp1(combined_embedding)
-    #elif model_type == "mlp2":
-        #output = mlp2(combined_embedding)
-    else:
-        raise ValueError("Invalid model type. Choose 'mlp1' or 'mlp2'.")
-
-    # Get mood category
-    mood_category = torch.argmax(output, dim=1).item()
-    return mood_category
-
-
-
-
-# Example usage
 if __name__ == "__main__":
-    image_path = "output.jpg"
-    audio_path = "output.wav"
+    image_path = "/project/vsharan_1298/aajinbo/csci566/data/MELD/MELD_kaggle/MELD-RAW/MELD_processed/demo_20_2000ms/test/images/dia0_utt0.png"
+    audio_path = "/project/vsharan_1298/aajinbo/csci566/data/MELD/MELD_kaggle/MELD-RAW/MELD_processed/demo_20_2000ms/test/audio/dia0_utt0.wav"
     text = "i am very happy"
-
-    mood = infer(image_path, audio_path, text, model_type="mlp1")
-    print(f"Predicted mood category: {mood}")
+    model_path = "models/MLP_1.pth"
+    a = inference(image_path, audio_path, text, model_path)
+    print(a)
